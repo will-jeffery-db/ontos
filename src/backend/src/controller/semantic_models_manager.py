@@ -12,6 +12,7 @@ ONTOS = Namespace("http://ontos.app/ontology#")
 from rdflib.namespace import XSD
 from sqlalchemy.orm import Session
 import signal
+import threading
 from contextlib import contextmanager
 import json
 import shutil
@@ -1162,9 +1163,19 @@ class SemanticModelsManager:
             logger.error(f"Failed to rebuild RDF graph: {e}")
 
     def _invalidate_cache(self) -> None:
-        """Clear all cache entries (in-memory and persistent file cache)."""
+        """Clear all cache entries (in-memory and persistent file cache).
+
+        Also kicks off an async rebuild of the persistent caches so the next
+        read isn't forced to compute from the live graph.
+        """
         self._cache.clear()
-        
+
+        # Drop the in-memory snapshot caches; readers fall through to disk or
+        # live computation until the async rebuild repopulates them.
+        self._cached_concepts = None
+        self._cached_taxonomies = None
+        self._cached_stats = None
+
         # Also delete persistent cache files so they get rebuilt on next read
         cache_dir = self._data_dir / "cache"
         if cache_dir.exists():
@@ -1176,8 +1187,28 @@ class SemanticModelsManager:
                         logger.debug(f"Deleted persistent cache file: {cache_file}")
                     except Exception as e:
                         logger.warning(f"Failed to delete cache file {cache_file}: {e}")
-        
+
         logger.info("Semantic models cache invalidated (in-memory and persistent)")
+
+        # Trigger a background rebuild. Skip if a rebuild thread is already
+        # running — _build_persistent_caches_atomic holds a FileLock, so
+        # spawning extras would just queue behind it.
+        existing = getattr(self, "_cache_rebuild_thread", None)
+        if existing is not None and existing.is_alive():
+            return
+
+        def _rebuild() -> None:
+            try:
+                self._build_persistent_caches_atomic()
+            except Exception as exc:
+                logger.error(f"Async cache rebuild failed: {exc}", exc_info=True)
+
+        self._cache_rebuild_thread = threading.Thread(
+            target=_rebuild,
+            name="semantic-models-cache-rebuild",
+            daemon=True,
+        )
+        self._cache_rebuild_thread.start()
 
     def _get_cached(self, key: str) -> Optional[Any]:
         """Get cached value if still valid"""
@@ -3894,8 +3925,4 @@ class SemanticModelsManager:
             elif isinstance(obj, str) and (obj.startswith("urn:") or obj.startswith("http")):
                 return obj
         return None
-
-    def _invalidate_cache(self):
-        """Invalidate all cached results."""
-        self._cache.clear()
 
