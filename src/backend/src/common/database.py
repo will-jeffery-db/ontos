@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional, TypeVar
 
-from sqlalchemy import create_engine, text, event
+from sqlalchemy import create_engine, text, event, MetaData
 from sqlalchemy.orm import sessionmaker, Session as SQLAlchemySession
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import pool
@@ -34,8 +34,22 @@ logger = get_logger(__name__)
 
 T = TypeVar('T')
 
-# Define the base class for SQLAlchemy models
-Base = declarative_base()
+# Define the base class for SQLAlchemy models.
+#
+# In Lakebase deployments we cannot rely on `SET search_path` taking effect for
+# DDL (Postgres returns "no schema has been selected to create in" on
+# unqualified CREATE TABLE / CREATE TYPE even after the SET succeeds). Force
+# every table — and any Enum that inherits schema — to be emitted as
+# `<schema>.<name>` by attaching a schema to the metadata up front.
+#
+# Only set the schema when PGSCHEMA is explicitly configured to something other
+# than the implicit "public" default; otherwise local dev keeps its current
+# unqualified behavior so existing Alembic migrations stay unaffected.
+_BASE_SCHEMA = os.getenv("PGSCHEMA") or os.getenv("POSTGRES_DB_SCHEMA")
+if _BASE_SCHEMA and _BASE_SCHEMA != "public":
+    Base = declarative_base(metadata=MetaData(schema=_BASE_SCHEMA))
+else:
+    Base = declarative_base()
 
 # --- Import all db_models so every table is registered with Base --- #
 # Model modules are imported in src.db_models.__init__.py; importing the
