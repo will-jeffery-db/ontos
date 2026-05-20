@@ -1,3 +1,4 @@
+import os
 import uuid
 from sqlalchemy import Column, String, Text, Enum, Index, Integer
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -6,6 +7,12 @@ from sqlalchemy import TIMESTAMP
 import enum
 
 from src.common.database import Base
+
+# Schema-qualify the PG enum types so DDL emits `CREATE TYPE <schema>.<name>`
+# instead of relying on search_path. Mirrors the default fallback chain used by
+# the Settings model so this works whether the env var is PGSCHEMA or
+# POSTGRES_DB_SCHEMA, and falls back to "public" for local/dev.
+_PG_ENUM_SCHEMA = os.getenv("PGSCHEMA") or os.getenv("POSTGRES_DB_SCHEMA") or "public"
 
 
 class CommentStatus(enum.Enum):
@@ -30,14 +37,22 @@ class CommentDb(Base):
     comment = Column(Text, nullable=False)
     audience = Column(Text, nullable=True)  # JSON array of group names who can see the comment
     status = Column(
-        Enum(CommentStatus, values_callable=lambda x: [e.value for e in x]),
+        Enum(
+            CommentStatus,
+            values_callable=lambda x: [e.value for e in x],
+            schema=_PG_ENUM_SCHEMA,
+        ),
         nullable=False,
         default=CommentStatus.ACTIVE
     )
-    
+
     # Comment type: regular comment or rating
     comment_type = Column(
-        Enum(CommentType, values_callable=lambda x: [e.value for e in x]),
+        Enum(
+            CommentType,
+            values_callable=lambda x: [e.value for e in x],
+            schema=_PG_ENUM_SCHEMA,
+        ),
         nullable=False,
         default=CommentType.COMMENT
     )
